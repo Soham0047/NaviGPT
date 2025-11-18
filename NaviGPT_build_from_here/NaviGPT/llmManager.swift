@@ -3,13 +3,47 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
+// Simple configuration helper
+private class SimpleConfig {
+    static func getAPIKey() -> String? {
+        // Try .env file first
+        if let envPath = Bundle.main.path(forResource: ".env", ofType: nil),
+           let content = try? String(contentsOfFile: envPath) {
+            let lines = content.components(separatedBy: .newlines)
+            for line in lines {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.hasPrefix("OPENAI_API_KEY=") {
+                    let components = trimmed.components(separatedBy: "=")
+                    if components.count >= 2 {
+                        return components[1...].joined(separator: "=").trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+            }
+        }
+        
+        // Try Config.plist
+        if let plistPath = Bundle.main.path(forResource: "Config", ofType: "plist"),
+           let plistData = NSDictionary(contentsOfFile: plistPath) as? [String: String],
+           let key = plistData["OPENAI_API_KEY"] {
+            return key
+        }
+        
+        // Try environment variable
+        if let envKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] {
+            return envKey
+        }
+        
+        return nil
+    }
+}
+
 class LLmManager {
     private let apiKey: String
     let speechVoice = AVSpeechSynthesizer()
     
     init() {
-        // Try to get API key from ConfigManager
-        if let key = ConfigManager.shared.getOpenAIAPIKey() {
+        // Try to get API key from configuration
+        if let key = SimpleConfig.getAPIKey() {
             self.apiKey = key
         } else {
             // Fallback to placeholder - this will cause API calls to fail gracefully
