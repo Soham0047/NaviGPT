@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict/>
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>NaviGPT needs camera access to detect obstacles and assist real-time navigation.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>NaviGPT uses your location to generate accurate turn-by-turn guidance.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>NaviGPT uses the microphone to process voice commands hands-free.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>NaviGPT performs speech recognition to interpret navigation requests.</string>
+</dict>
 </plist>

@@ -42,13 +42,13 @@ class LLmManager {
     let speechVoice = AVSpeechSynthesizer()
     
     init() {
-        // Try to get API key from configuration
-        if let key = SimpleConfig.getAPIKey() {
-            self.apiKey = key
+        // Read API key from Config.plist or environment
+        if let apiKey = ConfigManager.shared.getValue(forKey: "OpenAIAPIKey") as? String, !apiKey.isEmpty {
+            self.apiKey = apiKey
+            print("LLmManager initialized with API key from config")
         } else {
-            // Fallback to placeholder - this will cause API calls to fail gracefully
-            self.apiKey = "your_openai_api_key_here"
-            print("Warning: OpenAI API key not found. Please set OPENAI_API_KEY in your .env file or configuration.")
+            self.apiKey = ""
+            print("⚠️ Warning: OpenAI API key not found. Please add it to Config.plist")
         }
     }
     
@@ -63,16 +63,13 @@ class LLmManager {
         let imageUrl = "data:image/jpeg;base64,\(base64Image)"
         
         let payload: [String: Any] = [
-            "model": "gpt-4-vision-preview",
+            "model": "gpt-4o",
             "messages": [
                 [
                     "role": "user",
-                    "content": "Based on the photo, tell the user if they are any physical obstructions like cars, red light, etc. Using the road: \(location), help direct the user safely. Let the user know if it is safe to walk. If the image provided is not clear, tell the user but don't describe the photo with more than 1 sentence. Only respond in 1 or 2 sentences."
-                ],
-                [
-                    "role": "user",
                     "content": [
-                        ["type": "image_url", "image_url": imageUrl]
+                        ["type": "text", "text": "Analyze the image for navigation assistance. If the user is indoors, describe the room, obstacles (chairs, tables), and locate doors or exits. If outdoors, identify cars, traffic lights, and sidewalks. Current location context: \(location). Provide clear, safe directions in 2 sentences."],
+                        ["type": "image_url", "image_url": ["url": imageUrl]]
                     ]
                 ]
             ],
@@ -82,15 +79,15 @@ class LLmManager {
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload, options: [])
         
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            if error != nil {
-                self.errorMessage()
-                completion(nil)
+            if let error = error {
+                print("Network Error: \(error.localizedDescription)")
+                completion("Network Error: \(error.localizedDescription)")
                 return
             }
             
             guard let data = data else {
                 print("Error: No data received")
-                completion(nil)
+                completion("Error: No data received from server")
                 return
             }
             
@@ -98,17 +95,29 @@ class LLmManager {
                 let responseString = String(data: data, encoding: .utf8)
                 print("Response Data: \(responseString ?? "No readable response data")")
                 
-                if let responseDict = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                   let choices = responseDict["choices"] as? [[String: Any]],
-                   let message = choices.first?["message"] as? [String: Any],
-                   let content = message["content"] as? String {
-                    completion(content)
+                if let responseDict = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
+                    
+                    // Check for API Error
+                    if let errorDict = responseDict["error"] as? [String: Any],
+                       let errorMessage = errorDict["message"] as? String {
+                        print("API Error: \(errorMessage)")
+                        completion("OpenAI Error: \(errorMessage)")
+                        return
+                    }
+                    
+                    if let choices = responseDict["choices"] as? [[String: Any]],
+                       let message = choices.first?["message"] as? [String: Any],
+                       let content = message["content"] as? String {
+                        completion(content)
+                    } else {
+                        completion("Error: Could not parse response content")
+                    }
                 } else {
-                    completion(nil)
+                    completion("Error: Invalid JSON response")
                 }
             } catch {
-                print("Error: Failed to parse JSON")
-                completion(nil)
+                print("Error: Failed to parse JSON: \(error.localizedDescription)")
+                completion("Error: Failed to parse JSON response")
             }
         }
         
@@ -126,16 +135,13 @@ class LLmManager {
         let imageUrl = "data:image/jpeg;base64,\(base64Image)"
         
         let payload: [String: Any] = [
-            "model": "gpt-4-vision-preview",
+            "model": "gpt-4o",
             "messages": [
                 [
                     "role": "user",
-                    "content": "Based on the photo, tell the user if they are any physical obstructions like cars, red light, etc. Using the road: \(location), the instructions: \(stepInstruction) and then \(secondStepInstruction), and the user's destination: \(destination), help direct the user safely. Let the user know if it is safe to walk. If the image provided is not clear, tell the user but don't describe the photo with more than 1 sentence. Only respond in 2 or 3 sentences."
-                ],
-                [
-                    "role": "user",
                     "content": [
-                        ["type": "image_url", "image_url": imageUrl]
+                        ["type": "text", "text": "You are a navigation assistant. Sync the visual scene with the map instructions. \nMap Instruction: \(stepInstruction). \nNext: \(secondStepInstruction). \nDestination: \(destination). \nLocation: \(location). \n\nAnalyze the image: \n1. Confirm if the user is facing the correct direction based on the instruction (e.g., if instruction says 'turn right', is there a turn visible?). \n2. Identify immediate obstacles. \n3. If indoors, guide to the exit. \n4. Provide a single, clear directive combining visual and map data."],
+                        ["type": "image_url", "image_url": ["url": imageUrl]]
                     ]
                 ]
             ],
@@ -145,15 +151,15 @@ class LLmManager {
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload, options: [])
         
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            if error != nil {
-                self.errorMessage()
-                completion(nil)
+            if let error = error {
+                print("Network Error: \(error.localizedDescription)")
+                completion("Network Error: \(error.localizedDescription)")
                 return
             }
             
             guard let data = data else {
                 print("Error: No data received")
-                completion(nil)
+                completion("Error: No data received from server")
                 return
             }
             
@@ -161,17 +167,29 @@ class LLmManager {
                 let responseString = String(data: data, encoding: .utf8)
                 print("Response Data: \(responseString ?? "No readable response data")")
                 
-                if let responseDict = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                   let choices = responseDict["choices"] as? [[String: Any]],
-                   let message = choices.first?["message"] as? [String: Any],
-                   let content = message["content"] as? String {
-                    completion(content)
+                if let responseDict = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
+                    
+                    // Check for API Error
+                    if let errorDict = responseDict["error"] as? [String: Any],
+                       let errorMessage = errorDict["message"] as? String {
+                        print("API Error: \(errorMessage)")
+                        completion("OpenAI Error: \(errorMessage)")
+                        return
+                    }
+                    
+                    if let choices = responseDict["choices"] as? [[String: Any]],
+                       let message = choices.first?["message"] as? [String: Any],
+                       let content = message["content"] as? String {
+                        completion(content)
+                    } else {
+                        completion("Error: Could not parse response content")
+                    }
                 } else {
-                    completion(nil)
+                    completion("Error: Invalid JSON response")
                 }
             } catch {
-                print("Error: Failed to parse JSON")
-                completion(nil)
+                print("Error: Failed to parse JSON: \(error.localizedDescription)")
+                completion("Error: Failed to parse JSON response")
             }
         }
         

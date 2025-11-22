@@ -21,16 +21,7 @@ struct DepthPoint {
     let confidence: Float
 }
 
-/// Result of depth estimation
-struct DepthEstimationResult {
-    let depthMap: CVPixelBuffer?
-    let averageDepth: Float
-    let minDepth: Float
-    let maxDepth: Float
-    let depthPoints: [DepthPoint]
-    let processingTime: TimeInterval
-    let timestamp: Date
-}
+// DepthEstimationResult is defined in ModelTypes.swift
 
 /// Configuration for depth processing
 struct DepthProcessingConfig {
@@ -55,11 +46,12 @@ class DepthEstimationProcessor: ObservableObject {
     private var config = DepthProcessingConfig()
     
     // MARK: - Initialization
-    
+
     init() {
+        // LiDAR availability will be checked immediately
         checkLiDARAvailability()
     }
-    
+
     private func checkLiDARAvailability() {
         if #available(iOS 14.0, *) {
             hasLiDAR = ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
@@ -104,14 +96,16 @@ class DepthEstimationProcessor: ObservableObject {
                 
                 let depthInfo = self.analyzeDepthMap(depthBuffer)
                 let processingTime = Date().timeIntervalSince(startTime)
-                
+
+                // Convert CVPixelBuffer to [Float] array for ModelTypes compatibility
+                let depthArray = self.convertDepthBufferToArray(depthBuffer)
+                let width = CVPixelBufferGetWidth(depthBuffer)
+                let height = CVPixelBufferGetHeight(depthBuffer)
+
                 let result = DepthEstimationResult(
-                    depthMap: depthBuffer,
-                    averageDepth: depthInfo.average,
-                    minDepth: depthInfo.min,
-                    maxDepth: depthInfo.max,
-                    depthPoints: depthInfo.points,
-                    processingTime: processingTime,
+                    depthMap: depthArray,
+                    width: width,
+                    height: height,
                     timestamp: Date()
                 )
                 
@@ -140,15 +134,17 @@ class DepthEstimationProcessor: ObservableObject {
         
         let depthMap = depthData.depthMap
         let depthInfo = analyzeDepthMap(depthMap)
-        let processingTime = Date().timeIntervalSince(startTime)
-        
+        _ = Date().timeIntervalSince(startTime) // Suppress unused processingTime warning
+
+        // Convert CVPixelBuffer to [Float] array for ModelTypes compatibility
+        let depthArray = convertDepthBufferToArray(depthMap)
+        let width = CVPixelBufferGetWidth(depthMap)
+        let height = CVPixelBufferGetHeight(depthMap)
+
         let result = DepthEstimationResult(
-            depthMap: depthMap,
-            averageDepth: depthInfo.average,
-            minDepth: depthInfo.min,
-            maxDepth: depthInfo.max,
-            depthPoints: depthInfo.points,
-            processingTime: processingTime,
+            depthMap: depthArray,
+            width: width,
+            height: height,
             timestamp: Date()
         )
         
@@ -256,30 +252,61 @@ class DepthEstimationProcessor: ObservableObject {
     // MARK: - Obstacle Detection
     
     /// Detect obstacles based on depth thresholds
-    func detectObstacles(from result: DepthEstimationResult, proximityThreshold: Float = 2.0) -> [DepthPoint] {
-        return result.depthPoints.filter { $0.depth < proximityThreshold && $0.depth > 0.1 }
+    func detectObstacles(from result: DepthEstimationResult, proximityThreshold: Float = 2.0) -> [DetectedObstacle] {
+        return result.obstacles.filter { $0.distance < proximityThreshold && $0.distance > 0.1 }
     }
-    
+
     /// Get spatial audio description of depth information
     func describeDepthScenario(_ result: DepthEstimationResult) -> String {
         let obstacles = detectObstacles(from: result)
-        
+
+        // Calculate average depth from depthMap
+        let validDepths = result.depthMap.filter { $0 > 0 && $0 < config.maxDepthRange }
+        let averageDepth = validDepths.isEmpty ? 0 : validDepths.reduce(0, +) / Float(validDepths.count)
+
         if obstacles.isEmpty {
-            if result.averageDepth > 5.0 {
-                return "Clear path ahead, average distance \(String(format: "%.1f", result.averageDepth)) meters"
+            if averageDepth > 5.0 {
+                return "Clear path ahead, average distance \(String(format: "%.1f", averageDepth)) meters"
             } else {
-                return "Objects detected at \(String(format: "%.1f", result.averageDepth)) meters average"
+                return "Objects detected at \(String(format: "%.1f", averageDepth)) meters average"
             }
         } else {
-            let closestObstacle = obstacles.min(by: { $0.depth < $1.depth })!
-            return "Warning: Obstacle detected at \(String(format: "%.1f", closestObstacle.depth)) meters"
+            let closestObstacle = obstacles.min(by: { $0.distance < $1.distance })!
+            return "Warning: Obstacle detected at \(String(format: "%.1f", closestObstacle.distance)) meters"
         }
     }
     
     // MARK: - Configuration
-    
+
     func updateConfig(_ newConfig: DepthProcessingConfig) {
         config = newConfig
         logger.info("Depth processing config updated")
+    }
+
+    // MARK: - Helper Methods
+
+    /// Convert CVPixelBuffer depth map to Float array
+    private func convertDepthBufferToArray(_ depthBuffer: CVPixelBuffer) -> [Float] {
+        CVPixelBufferLockBaseAddress(depthBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(depthBuffer, .readOnly) }
+
+        let width = CVPixelBufferGetWidth(depthBuffer)
+        let height = CVPixelBufferGetHeight(depthBuffer)
+        _ = CVPixelBufferGetBytesPerRow(depthBuffer) // Suppress unused warning
+
+        guard let baseAddress = CVPixelBufferGetBaseAddress(depthBuffer) else {
+            return []
+        }
+
+        let buffer = baseAddress.assumingMemoryBound(to: Float32.self)
+        let count = width * height
+        var depthArray: [Float] = []
+        depthArray.reserveCapacity(count)
+
+        for i in 0..<count {
+            depthArray.append(buffer[i])
+        }
+
+        return depthArray
     }
 }

@@ -9,7 +9,7 @@ import UIKit
 import AVFoundation
 import CoreHaptics
 
-class LiDARCameraViewController: UIViewController, AVCaptureDepthDataOutputDelegate {
+class LiDARCameraViewController: UIViewController, AVCaptureDepthDataOutputDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
     var captureSession: AVCaptureSession?
     var isCameraActive: Bool = true {
         didSet {
@@ -32,6 +32,14 @@ class LiDARCameraViewController: UIViewController, AVCaptureDepthDataOutputDeleg
     var focusView: UIView?
     var captureButton: UIButton?
 
+    // Phase 3: Real-time processing
+    var cameraProcessor: RealTimeCameraProcessor?
+    var lidarProcessor: EnhancedLiDARProcessor?
+    
+    // Real-time continuous detection enabled
+    var lastFeedbackTime: Date = Date()
+    let feedbackInterval: TimeInterval = 0.1 // Process frames continuously
+
     override func viewDidLoad() {
         super.viewDidLoad()
 
@@ -49,13 +57,22 @@ class LiDARCameraViewController: UIViewController, AVCaptureDepthDataOutputDeleg
         captureSession = AVCaptureSession()
         guard let captureSession = captureSession else { return }
 
-        guard let device = AVCaptureDevice.default(.builtInLiDARDepthCamera, for: .video, position: .back) else {
-            print("LiDAR camera not available")
+        // Try LiDAR first, fall back to Wide Angle if unavailable (e.g. iPhone 13 non-Pro)
+        let device: AVCaptureDevice?
+        if let lidarDevice = AVCaptureDevice.default(.builtInLiDARDepthCamera, for: .video, position: .back) {
+            device = lidarDevice
+        } else {
+            print("LiDAR camera not available. Falling back to Wide Angle Camera.")
+            device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+        }
+
+        guard let videoDevice = device else {
+            print("No camera available")
             return
         }
 
         do {
-            let input = try AVCaptureDeviceInput(device: device)
+            let input = try AVCaptureDeviceInput(device: videoDevice)
             if captureSession.canAddInput(input) {
                 captureSession.addInput(input)
             }
@@ -63,12 +80,17 @@ class LiDARCameraViewController: UIViewController, AVCaptureDepthDataOutputDeleg
             let videoOutput = AVCaptureVideoDataOutput()
             if captureSession.canAddOutput(videoOutput) {
                 captureSession.addOutput(videoOutput)
+                // Set delegate for video processing
+                videoOutput.setSampleBufferDelegate(self, queue: DispatchQueue(label: "videoQueue"))
             }
 
-            let depthOutput = AVCaptureDepthDataOutput()
-            if captureSession.canAddOutput(depthOutput) {
-                captureSession.addOutput(depthOutput)
-                depthOutput.setDelegate(self, callbackQueue: DispatchQueue(label: "depthQueue"))
+            // Only add depth output if we actually have a LiDAR device
+            if videoDevice.deviceType == .builtInLiDARDepthCamera {
+                let depthOutput = AVCaptureDepthDataOutput()
+                if captureSession.canAddOutput(depthOutput) {
+                    captureSession.addOutput(depthOutput)
+                    depthOutput.setDelegate(self, callbackQueue: DispatchQueue(label: "depthQueue"))
+                }
             }
 
             photoOutput = AVCapturePhotoOutput()
@@ -82,14 +104,28 @@ class LiDARCameraViewController: UIViewController, AVCaptureDepthDataOutputDeleg
             print("Error setting up session: \(error)")
         }
     }
+    
+    // MARK: - Video Data Output Delegate
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        // Pass frame to RealTimeCameraProcessor
+        Task {
+            await cameraProcessor?.processExternalFrame(sampleBuffer)
+        }
+    }
 
     func setupPreview() {
         guard let captureSession = captureSession else { return }
 
         let previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
         if let connection = previewLayer.connection {
-            if connection.isVideoOrientationSupported {
-                connection.videoOrientation = .portrait
+            if #available(iOS 17.0, *) {
+                if connection.isVideoRotationAngleSupported(90) {
+                    connection.videoRotationAngle = 90
+                }
+            } else {
+                if connection.isVideoOrientationSupported {
+                    connection.videoOrientation = .portrait
+                }
             }
         }
         previewLayer.frame = view.bounds
@@ -108,11 +144,15 @@ class LiDARCameraViewController: UIViewController, AVCaptureDepthDataOutputDeleg
     }
 
     func startSession() {
-        captureSession?.startRunning()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.captureSession?.startRunning()
+        }
     }
 
     func stopSession() {
-        captureSession?.stopRunning()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.captureSession?.stopRunning()
+        }
     }
 
     func setupHaptics() {
@@ -225,7 +265,15 @@ class LiDARCameraViewController: UIViewController, AVCaptureDepthDataOutputDeleg
 
         let settings = AVCapturePhotoSettings()
         if let photoOutputConnection = photoOutput.connection(with: .video) {
-            photoOutputConnection.videoOrientation = .portrait
+            if #available(iOS 17.0, *) {
+                if photoOutputConnection.isVideoRotationAngleSupported(0) {
+                    photoOutputConnection.videoRotationAngle = 0
+                }
+            } else {
+                if photoOutputConnection.isVideoOrientationSupported {
+                    photoOutputConnection.videoOrientation = AVCaptureVideoOrientation.portrait
+                }
+            }
         }
         photoOutput.capturePhoto(with: settings, delegate: strongDelegate!)
     }}

@@ -8,6 +8,13 @@ class MapsManager: NSObject, ObservableObject, CLLocationManagerDelegate, MKMapV
     @Published var userRegion = MKCoordinateRegion()
     @Published var directions: [MKRoute.Step] = []
     @Published var routePolyline: MKPolyline?
+    @Published var navigationMode: NavigationMode = .outdoor
+    
+    enum NavigationMode {
+        case indoor
+        case outdoor
+    }
+    
     private var locationManager = CLLocationManager()
     private var geocoder = CLGeocoder()
     private var lastLocation: CLLocation?

@@ -40,8 +40,8 @@ class VisionModelProcessor: ObservableObject {
     private let logger = Logger(subsystem: "com.navigpt.vision", category: "VisionModelProcessor")
     
     // Processing configuration
-    private let confidenceThreshold: Float = 0.5
-    private let maxDetections: Int = 10
+    private let confidenceThreshold: Float = 0.3 // Lower threshold to catch more objects
+    private let maxDetections: Int = 20 // Detect more objects simultaneously
     
     // MARK: - Object Detection
     
@@ -50,54 +50,176 @@ class VisionModelProcessor: ObservableObject {
         let startTime = Date()
         isProcessing = true
         defer { isProcessing = false }
-        
+
         logger.info("Starting object detection")
-        
+
         // Ensure model is loaded
         if !modelManager.isModelLoaded(modelType) {
             try await modelManager.loadModel(modelType)
         }
-        
-        // Get the Vision model
+
+        // Convert UIImage to CIImage
+        guard let ciImage = CIImage(image: image) else {
+            throw ModelError.invalidInput("Failed to convert UIImage to CIImage")
+        }
+
+        // Check if using built-in Vision or custom model
+        if modelManager.usingBuiltInModels.contains(modelType) {
+            logger.info("Using built-in Vision object detection")
+            return try await performBuiltInObjectDetection(ciImage: ciImage, startTime: startTime)
+        }
+
+        // Use YOLOv8 CoreML model for real object detection
         let visionModel = try modelManager.getVisionModel(modelType)
-        
-        // Create the detection request
+        logger.info("Using YOLOv8 model for detection")
         let request = VNCoreMLRequest(model: visionModel) { [weak self] request, error in
             if let error = error {
                 self?.logger.error("Detection request failed: \(error.localizedDescription)")
                 return
             }
         }
-        
+
         request.imageCropAndScaleOption = .scaleFill
-        
-        // Convert UIImage to CIImage
-        guard let ciImage = CIImage(image: image) else {
-            throw ModelError.invalidInput("Failed to convert UIImage to CIImage")
-        }
-        
+
         // Perform the request
         let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
-        
+
         return try await withCheckedThrowingContinuation { continuation in
             do {
                 try handler.perform([request])
-                
+
                 let detectedObjects = self.parseDetectionResults(request.results)
                 let processingTime = Date().timeIntervalSince(startTime)
-                
+
                 let result = VisionProcessingResult(
                     objects: detectedObjects,
                     processingTime: processingTime,
                     timestamp: Date()
                 )
-                
+
                 self.lastResult = result
                 self.logger.info("Detection complete: \(detectedObjects.count) objects found in \(processingTime)s")
-                
+
                 continuation.resume(returning: result)
             } catch {
                 self.logger.error("Detection failed: \(error.localizedDescription)")
+                continuation.resume(throwing: ModelError.processingFailed(error.localizedDescription))
+            }
+        }
+    }
+
+    /// Perform detection using built-in Vision capabilities
+    private func performBuiltInDetection(ciImage: CIImage, startTime: Date) async throws -> VisionProcessingResult {
+        // Use VNRecognizeAnimalsRequest as a fallback (detects dogs, cats)
+        let request = VNRecognizeAnimalsRequest()
+
+        let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
+
+        return try await withCheckedThrowingContinuation { continuation in
+            do {
+                try handler.perform([request])
+
+                guard let observations = request.results else {
+                    let result = VisionProcessingResult(
+                        objects: [],
+                        processingTime: Date().timeIntervalSince(startTime),
+                        timestamp: Date()
+                    )
+                    continuation.resume(returning: result)
+                    return
+                }
+
+                let detectedObjects = observations
+                    .filter { $0.confidence >= confidenceThreshold }
+                    .prefix(maxDetections)
+                    .map { observation in
+                        DetectedObject(
+                            label: observation.labels.first?.identifier.capitalized ?? "Animal",
+                            confidence: observation.confidence,
+                            boundingBox: observation.boundingBox,
+                            distance: nil
+                        )
+                    }
+
+                let processingTime = Date().timeIntervalSince(startTime)
+                let result = VisionProcessingResult(
+                    objects: Array(detectedObjects),
+                    processingTime: processingTime,
+                    timestamp: Date()
+                )
+
+                self.lastResult = result
+                self.logger.info("Built-in detection complete: \(detectedObjects.count) objects found")
+
+                continuation.resume(returning: result)
+            } catch {
+                self.logger.error("Built-in detection failed: \(error.localizedDescription)")
+                continuation.resume(throwing: ModelError.processingFailed(error.localizedDescription))
+            }
+        }
+    }
+    
+    /// Perform general object detection using built-in Vision (people, faces, text)
+    private func performBuiltInObjectDetection(ciImage: CIImage, startTime: Date) async throws -> VisionProcessingResult {
+        var allDetectedObjects: [DetectedObject] = []
+        
+        // Detect humans
+        let humanRequest = VNDetectHumanRectanglesRequest()
+        
+        // Detect faces
+        let faceRequest = VNDetectFaceRectanglesRequest()
+        
+        let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
+        
+        return try await withCheckedThrowingContinuation { continuation in
+            do {
+                try handler.perform([humanRequest, faceRequest])
+                
+                // Process human detections
+                if let humanObservations = humanRequest.results {
+                    let humans = humanObservations
+                        .filter { $0.confidence >= confidenceThreshold }
+                        .prefix(5)
+                        .map { observation in
+                            DetectedObject(
+                                label: "person",
+                                confidence: observation.confidence,
+                                boundingBox: observation.boundingBox,
+                                distance: nil
+                            )
+                        }
+                    allDetectedObjects.append(contentsOf: humans)
+                }
+                
+                // Process face detections (backup for people detection)
+                if let faceObservations = faceRequest.results, allDetectedObjects.isEmpty {
+                    let faces = faceObservations
+                        .filter { $0.confidence >= confidenceThreshold }
+                        .prefix(5)
+                        .map { observation in
+                            DetectedObject(
+                                label: "person",
+                                confidence: observation.confidence,
+                                boundingBox: observation.boundingBox,
+                                distance: nil
+                            )
+                        }
+                    allDetectedObjects.append(contentsOf: faces)
+                }
+                
+                let processingTime = Date().timeIntervalSince(startTime)
+                let result = VisionProcessingResult(
+                    objects: Array(allDetectedObjects.prefix(maxDetections)),
+                    processingTime: processingTime,
+                    timestamp: Date()
+                )
+                
+                self.lastResult = result
+                self.logger.info("Built-in object detection: \(allDetectedObjects.count) objects found")
+                
+                continuation.resume(returning: result)
+            } catch {
+                self.logger.error("Built-in object detection failed: \(error.localizedDescription)")
                 continuation.resume(throwing: ModelError.processingFailed(error.localizedDescription))
             }
         }
@@ -245,14 +367,16 @@ class VisionModelProcessor: ObservableObject {
         }
         
         let descriptions = objects.map { object in
-            let confidencePercent = Int(object.confidence * 100)
-            var desc = "\(object.label) (\(confidencePercent)%)"
+            var desc = "\(object.label)"
             if let distance = object.distance {
-                desc += " at \(String(format: "%.1f", distance))m"
+                desc += " at \(String(format: "%.1f", distance)) meters"
+            } else {
+                desc += " detected"
             }
             return desc
         }
         
+        logger.info("Detected: \(descriptions.joined(separator: ", "))")
         return descriptions.joined(separator: ", ")
     }
 }

@@ -11,18 +11,6 @@ import CoreML
 import Vision
 import os.log
 
-/// Enum representing different types of ML models used in NaviGPT
-enum ModelType: String {
-    case objectDetection = "YOLOv8"
-    case depthEstimation = "DepthEstimator"
-    case sceneUnderstanding = "SceneClassifier"
-    case textRecognition = "OCRModel"
-    
-    var fileName: String {
-        return self.rawValue
-    }
-}
-
 /// Errors that can occur during model operations
 enum ModelError: Error, LocalizedError {
     case modelNotFound(ModelType)
@@ -57,17 +45,17 @@ class CoreMLModelManager: ObservableObject {
     // MARK: - Properties
     @Published var isLoading: Bool = false
     @Published var loadedModels: Set<ModelType> = []
-    
+    @Published var usingBuiltInModels: Set<ModelType> = [] // Track which models are using built-in Vision
+
     private var modelCache: [ModelType: MLModel] = [:]
     private var visionModels: [ModelType: VNCoreMLModel] = [:]
     private let logger = Logger(subsystem: "com.navigpt.models", category: "CoreMLModelManager")
+    private let performanceOptimizer = PerformanceOptimizer.shared
     
-    // Configuration
-    private let modelConfiguration: MLModelConfiguration = {
-        let config = MLModelConfiguration()
-        config.computeUnits = .all // Use Neural Engine, GPU, and CPU
-        return config
-    }()
+    // Configuration - now using PerformanceOptimizer
+    private var modelConfiguration: MLModelConfiguration {
+        return performanceOptimizer.getOptimizedMLConfig()
+    }
     
     // MARK: - Initialization
     private init() {
@@ -82,33 +70,60 @@ class CoreMLModelManager: ObservableObject {
             logger.info("Model \(type.rawValue) already loaded")
             return
         }
-        
+
         isLoading = true
         defer { isLoading = false }
-        
+
         logger.info("Loading model: \(type.rawValue)")
-        
-        do {
-            // Try to load from bundle
-            guard let modelURL = Bundle.main.url(forResource: type.fileName, withExtension: "mlmodelc") else {
-                throw ModelError.modelNotFound(type)
+
+        // First try .mlmodelc (compiled)
+        if let modelURL = Bundle.main.url(forResource: type.fileName, withExtension: "mlmodelc") {
+            do {
+                let model = try MLModel(contentsOf: modelURL, configuration: modelConfiguration)
+                modelCache[type] = model
+                loadedModels.insert(type)
+
+                if isVisionModel(type) {
+                    let visionModel = try VNCoreMLModel(for: model)
+                    visionModels[type] = visionModel
+                }
+
+                logger.info("✅ Successfully loaded compiled model: \(type.rawValue)")
+                return
+            } catch {
+                logger.warning("Failed to load compiled model: \(error.localizedDescription)")
             }
-            
-            let model = try MLModel(contentsOf: modelURL, configuration: modelConfiguration)
-            modelCache[type] = model
-            loadedModels.insert(type)
-            
-            // Create Vision model wrapper if applicable
-            if isVisionModel(type) {
-                let visionModel = try VNCoreMLModel(for: model)
-                visionModels[type] = visionModel
-            }
-            
-            logger.info("Successfully loaded model: \(type.rawValue)")
-        } catch {
-            logger.error("Failed to load model \(type.rawValue): \(error.localizedDescription)")
-            throw ModelError.loadingFailed(type, error.localizedDescription)
         }
+        
+        // Try .mlpackage directory
+        if let packageURL = Bundle.main.url(forResource: type.fileName, withExtension: "mlpackage") {
+            do {
+                // Try to compile the model first
+                logger.info("Compiling model at: \(packageURL.path)")
+                let compiledURL = try await MLModel.compileModel(at: packageURL)
+                logger.info("Model compiled to: \(compiledURL.path)")
+                
+                let model = try MLModel(contentsOf: compiledURL, configuration: modelConfiguration)
+                modelCache[type] = model
+                loadedModels.insert(type)
+
+                if isVisionModel(type) {
+                    let visionModel = try VNCoreMLModel(for: model)
+                    visionModels[type] = visionModel
+                }
+
+                logger.info("✅ Successfully loaded and compiled model: \(type.rawValue)")
+                return
+            } catch {
+                logger.error("Failed to compile/load mlpackage: \(error.localizedDescription)")
+            }
+        }
+
+        // Fallback to built-in Vision object detection
+        logger.warning("⚠️ Using built-in Vision object detection as fallback")
+        loadedModels.insert(type)
+        usingBuiltInModels.insert(type)
+        return
     }
     
     /// Load multiple models concurrently

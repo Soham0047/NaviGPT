@@ -8,7 +8,7 @@
 import Foundation
 import AVFoundation
 
-class SpeechManager: NSObject, AVSpeechSynthesizerDelegate {
+final class SpeechManager: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
     static let shared = SpeechManager()
     private let synthesizer = AVSpeechSynthesizer()
 
@@ -18,14 +18,18 @@ class SpeechManager: NSObject, AVSpeechSynthesizerDelegate {
     }
 
     func speak(_ utterance: AVSpeechUtterance, interrupt: Bool = false) {
-        if interrupt && synthesizer.isSpeaking {
-            synthesizer.stopSpeaking(at: .immediate)
+        DispatchQueue.main.async {
+            if interrupt && self.synthesizer.isSpeaking {
+                self.synthesizer.stopSpeaking(at: .immediate)
+            }
+            self.synthesizer.speak(utterance)
         }
-        synthesizer.speak(utterance)
     }
 
     func stopSpeaking() {
-        synthesizer.stopSpeaking(at: .immediate)
+        DispatchQueue.main.async {
+            self.synthesizer.stopSpeaking(at: .immediate)
+        }
     }
 
     // Optional: Implement delegate methods if you need to manage speech events

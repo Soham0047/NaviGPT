@@ -7,11 +7,17 @@ import UIKit
 struct LiDARCameraView: UIViewControllerRepresentable {
     @Binding var isCameraActive: Bool
     @Binding var capturedImage: UIImage?
-    @Binding var shouldCapturePhoto: Bool  // Add this line
+    @Binding var shouldCapturePhoto: Bool
     let llmManager: LLmManager
     @Binding var userLocation: String?
     let mapsManager: MapsManager
     let speechSynthesizer = AVSpeechSynthesizer()
+
+    // Phase 3: Real-time processing
+    @ObservedObject var cameraProcessor: RealTimeCameraProcessor
+    @ObservedObject var lidarProcessor: EnhancedLiDARProcessor
+    @Binding var showPerformanceHUD: Bool
+    @Binding var showDetectionOverlay: Bool
 
 
     func makeUIViewController(context: Context) -> LiDARCameraViewController {
@@ -22,6 +28,11 @@ struct LiDARCameraView: UIViewControllerRepresentable {
         controller.llmManager = llmManager
         controller.userLocation = userLocation
         controller.mapsManager = mapsManager
+
+        // Phase 3: Pass processors to view controller
+        controller.cameraProcessor = cameraProcessor
+        controller.lidarProcessor = lidarProcessor
+
         return controller
     }
 
@@ -79,7 +90,7 @@ struct LiDARCameraView: UIViewControllerRepresentable {
 
         let stepInstruction = mapsManager.getCurrentStepInstruction() ?? "Unable to get navigation instructions"
 
-        let utterance = AVSpeechUtterance(string: "Image has been captured.")
+        let utterance = AVSpeechUtterance(string: "Analyzing scene in detail...")
         utterance.voice = AVSpeechSynthesisVoice(language: "en")
         DispatchQueue.main.async {
             SpeechManager.shared.speak(utterance)

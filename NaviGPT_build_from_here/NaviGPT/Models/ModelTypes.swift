@@ -31,12 +31,26 @@ protocol PreloadableModel {
 // MARK: - Common Types
 
 /// Represents a point of interest in 3D space
-struct SpatialPoint {
+struct SpatialPoint: Equatable {
     let x: Float
     let y: Float
     let z: Float // depth
-    let screenPosition: CGPoint
-    let worldPosition: simd_float3?
+    var screenPosition: CGPoint = .zero
+    var worldPosition: simd_float3?
+
+    init(x: Float, y: Float, z: Float, screenPosition: CGPoint = .zero, worldPosition: simd_float3? = nil) {
+        self.x = x
+        self.y = y
+        self.z = z
+        self.screenPosition = screenPosition
+        self.worldPosition = worldPosition
+    }
+
+    static func ==(lhs: SpatialPoint, rhs: SpatialPoint) -> Bool {
+        return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z &&
+               lhs.screenPosition == rhs.screenPosition &&
+               lhs.worldPosition == rhs.worldPosition
+    }
 }
 
 /// Confidence levels for detections
@@ -45,7 +59,7 @@ enum DetectionConfidence: Comparable {
     case medium   // 0.5 - 0.75
     case high     // 0.75 - 0.9
     case veryHigh // > 0.9
-    
+
     init(rawValue: Float) {
         switch rawValue {
         case 0..<0.5:
@@ -58,7 +72,16 @@ enum DetectionConfidence: Comparable {
             self = .veryHigh
         }
     }
-    
+
+    var rawValue: Float {
+        switch self {
+        case .low: return 0.3
+        case .medium: return 0.6
+        case .high: return 0.8
+        case .veryHigh: return 0.95
+        }
+    }
+
     var description: String {
         switch self {
         case .low: return "Low"
@@ -70,28 +93,37 @@ enum DetectionConfidence: Comparable {
 }
 
 /// Obstacle information combining vision and depth
-struct Obstacle {
+struct Obstacle: Equatable {
     let id: UUID = UUID()
     let label: String
     let position: SpatialPoint
-    let boundingBox: CGRect
+    var boundingBox: CGRect = .zero
     let confidence: DetectionConfidence
     let distance: Float
-    let bearing: Float? // Angle relative to device orientation
-    
+    var bearing: Float? = nil // Angle relative to device orientation
+
+    init(label: String, position: SpatialPoint, confidence: DetectionConfidence, distance: Float, boundingBox: CGRect = .zero, bearing: Float? = nil) {
+        self.label = label
+        self.position = position
+        self.confidence = confidence
+        self.distance = distance
+        self.boundingBox = boundingBox
+        self.bearing = bearing
+    }
+
     var isNearby: Bool {
         return distance < 2.0
     }
-    
+
     var urgencyLevel: Int {
-        if distance < 1.0 {
-            return 3 // Critical
-        } else if distance < 2.0 {
-            return 2 // Warning
-        } else if distance < 5.0 {
-            return 1 // Info
+        if distance < 1.5 {
+            return 3 // Critical - immediate danger
+        } else if distance < 3.0 {
+            return 2 // Warning - approaching
+        } else if distance < 6.0 {
+            return 1 // Info - nearby
         }
-        return 0 // None
+        return 0 // None - far away
     }
     
     func describe() -> String {
@@ -116,11 +148,45 @@ struct Obstacle {
 
 /// Environment context from scene understanding
 struct SceneContext {
-    let sceneType: String // indoor, outdoor, street, etc.
-    let confidence: Float
-    let lighting: LightingCondition
-    let weatherHints: [String]
-    
+    var sceneType: String = "unknown" // indoor, outdoor, street, etc.
+    var confidence: Float = 0.0
+    var lighting: LightingCondition = .normal
+    var weatherHints: [String] = []
+
+    // Compatibility properties for old API
+    var primaryObjects: [String] = []
+    var spatialLayout: String = "unknown"
+    var lightingConditions: String {
+        switch lighting {
+        case .bright: return "bright"
+        case .normal: return "normal"
+        case .dim: return "dim"
+        case .dark: return "dark"
+        }
+    }
+    var confidenceScore: Float { return confidence }
+
+    init(sceneType: String = "unknown", confidence: Float = 0.0, lighting: LightingCondition = .normal, weatherHints: [String] = []) {
+        self.sceneType = sceneType
+        self.confidence = confidence
+        self.lighting = lighting
+        self.weatherHints = weatherHints
+    }
+
+    init(primaryObjects: [String], spatialLayout: String, lightingConditions: String, confidenceScore: Float) {
+        self.primaryObjects = primaryObjects
+        self.spatialLayout = spatialLayout
+        self.confidence = confidenceScore
+
+        // Map string lighting to enum
+        switch lightingConditions.lowercased() {
+        case "bright": self.lighting = .bright
+        case "dim": self.lighting = .dim
+        case "dark": self.lighting = .dark
+        default: self.lighting = .normal
+        }
+    }
+
     enum LightingCondition {
         case bright
         case normal
@@ -133,27 +199,37 @@ struct SceneContext {
 struct EnvironmentSnapshot {
     let timestamp: Date
     let obstacles: [Obstacle]
-    let sceneContext: SceneContext?
-    let depthEstimate: DepthEstimationResult?
-    let recognizedText: [String]
-    
+    var sceneContext: SceneContext? = nil
+    var depthEstimate: DepthEstimationResult? = nil
+    var recognizedText: [String] = []
+    var performanceMetrics: ModelPerformanceMetrics? = nil
+
+    init(timestamp: Date, obstacles: [Obstacle], sceneContext: SceneContext? = nil, depthEstimate: DepthEstimationResult? = nil, recognizedText: [String] = [], performanceMetrics: ModelPerformanceMetrics? = nil) {
+        self.timestamp = timestamp
+        self.obstacles = obstacles
+        self.sceneContext = sceneContext
+        self.depthEstimate = depthEstimate
+        self.recognizedText = recognizedText
+        self.performanceMetrics = performanceMetrics
+    }
+
     var obstacleCount: Int {
         return obstacles.count
     }
-    
+
     var nearbyObstacleCount: Int {
         return obstacles.filter { $0.isNearby }.count
     }
-    
+
     var criticalObstacles: [Obstacle] {
         return obstacles.filter { $0.urgencyLevel >= 2 }.sorted { $0.distance < $1.distance }
     }
-    
+
     func generateNavigationGuidance() -> String {
         if criticalObstacles.isEmpty {
             return "Path is clear"
         }
-        
+
         let descriptions = criticalObstacles.prefix(3).map { $0.describe() }
         return "Caution: " + descriptions.joined(separator: "; ")
     }
@@ -163,13 +239,26 @@ struct EnvironmentSnapshot {
 
 /// Tracks performance metrics for model inference
 struct ModelPerformanceMetrics {
-    let modelType: ModelType
+    var modelType: ModelType? = nil
+    var modelName: String = "Unknown"
     let inferenceTime: TimeInterval
-    let preprocessingTime: TimeInterval
-    let postprocessingTime: TimeInterval
+    var preprocessingTime: TimeInterval = 0
+    var postprocessingTime: TimeInterval = 0
     let totalTime: TimeInterval
-    let timestamp: Date
-    
+    var preprocessTime: TimeInterval { preprocessingTime } // Alias
+    var postprocessTime: TimeInterval { postprocessingTime } // Alias
+    var timestamp: Date = Date()
+
+    init(inferenceTime: TimeInterval, preprocessTime: TimeInterval = 0, postprocessTime: TimeInterval = 0, totalTime: TimeInterval, modelName: String = "Unknown", modelType: ModelType? = nil, timestamp: Date = Date()) {
+        self.inferenceTime = inferenceTime
+        self.preprocessingTime = preprocessTime
+        self.postprocessingTime = postprocessTime
+        self.totalTime = totalTime
+        self.modelName = modelName
+        self.modelType = modelType
+        self.timestamp = timestamp
+    }
+
     var fps: Double {
         return 1.0 / totalTime
     }
@@ -218,3 +307,59 @@ struct ModelStatistics {
         return Double(totalInferences - failureCount) / Double(totalInferences)
     }
 }
+
+// MARK: - Model Types
+
+/// Types of ML models supported
+enum ModelType: String, CaseIterable {
+    case objectDetection = "YOLOv8"
+    case depthEstimation = "DepthEstimation"
+    case sceneUnderstanding = "SceneClassifier"
+    case textRecognition = "OCR"
+
+    var fileName: String {
+        switch self {
+        case .objectDetection: return "YOLOv8"
+        case .depthEstimation: return "DepthEstimation"
+        case .sceneUnderstanding: return "SceneClassifier"
+        case .textRecognition: return "TextRecognition"
+        }
+    }
+}
+
+// MARK: - Depth Estimation Result
+
+/// Result from depth estimation
+struct DepthEstimationResult {
+    let depthMap: [Float]
+    let width: Int
+    let height: Int
+    let timestamp: Date
+    var obstacles: [DetectedObstacle] = []
+    var spatialGuidance: String = ""
+
+    init(depthMap: [Float], width: Int, height: Int, timestamp: Date = Date(), obstacles: [DetectedObstacle] = [], spatialGuidance: String = "") {
+        self.depthMap = depthMap
+        self.width = width
+        self.height = height
+        self.timestamp = timestamp
+        self.obstacles = obstacles
+        self.spatialGuidance = spatialGuidance
+    }
+}
+
+/// Simple obstacle detected from depth
+struct DetectedObstacle: Identifiable {
+    let id: UUID
+    let position: SpatialPoint
+    let distance: Float
+    let size: CGSize
+
+    init(id: UUID = UUID(), position: SpatialPoint, distance: Float, size: CGSize) {
+        self.id = id
+        self.position = position
+        self.distance = distance
+        self.size = size
+    }
+}
+

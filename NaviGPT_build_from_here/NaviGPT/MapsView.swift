@@ -20,8 +20,16 @@ struct MapsView: View {
                     }
             }
         }
-        .onChange(of: mapsManager.userRegion) { oldRegion, newRegion in
-            let location = CLLocation(latitude: newRegion.center.latitude, longitude: newRegion.center.longitude)
+        .onChange(of: mapsManager.userRegion.center.latitude) { oldLat, newLat in
+            let location = CLLocation(latitude: mapsManager.userRegion.center.latitude, longitude: mapsManager.userRegion.center.longitude)
+            mapsManager.getAddress(from: location) { address in
+                DispatchQueue.main.async {
+                    userLocation = address
+                }
+            }
+        }
+        .onChange(of: mapsManager.userRegion.center.longitude) { oldLon, newLon in
+            let location = CLLocation(latitude: mapsManager.userRegion.center.latitude, longitude: mapsManager.userRegion.center.longitude)
             mapsManager.getAddress(from: location) { address in
                 DispatchQueue.main.async {
                     userLocation = address

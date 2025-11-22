@@ -14,6 +14,7 @@ class SpeechRecognizer: ObservableObject {
     private var recognitionTask: SFSpeechRecognitionTask?
     private var timer: Timer?
     var mapsManager: MapsManager?
+    var onDescriptionRequested: (() -> Void)?
 
     func startTranscribing() {
         SFSpeechRecognizer.requestAuthorization { authStatus in
@@ -32,18 +33,35 @@ class SpeechRecognizer: ObservableObject {
     }
 
     private func startRecording() {
-        // 请求麦克风权限
-        AVAudioSession.sharedInstance().requestRecordPermission { granted in
-            if granted {
-                DispatchQueue.main.async {
-                    self.setupRecording()
+        // Request microphone permission
+        if #available(iOS 17.0, *) {
+            AVAudioApplication.requestRecordPermission(completionHandler: { granted in
+                if granted {
+                    DispatchQueue.main.async {
+                        self.setupRecording()
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        print("Microphone permission denied")
+                        let utterance = AVSpeechUtterance(string: "Please enable microphone permission in the settings.")
+                        let speechVoice = AVSpeechSynthesizer()
+                        speechVoice.speak(utterance)
+                    }
                 }
-            } else {
-                DispatchQueue.main.async {
-                    print("Microphone permission denied")
-                    let utterance = AVSpeechUtterance(string: "Please enable microphone permission in the settings.")
-                    let speechVoice = AVSpeechSynthesizer()
-                    speechVoice.speak(utterance)
+            })
+        } else {
+            AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                if granted {
+                    DispatchQueue.main.async {
+                        self.setupRecording()
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        print("Microphone permission denied")
+                        let utterance = AVSpeechUtterance(string: "Please enable microphone permission in the settings.")
+                        let speechVoice = AVSpeechSynthesizer()
+                        speechVoice.speak(utterance)
+                    }
                 }
             }
         }
@@ -113,7 +131,16 @@ class SpeechRecognizer: ObservableObject {
         }
         
         AudioServicesPlaySystemSound(1114)
-        mapsManager?.getDirections(to: transcribedText)
+        
+        // Check for description keywords
+        let text = transcribedText.lowercased()
+        if text.contains("front of me") || text.contains("describe") || text.contains("what do you see") {
+            DispatchQueue.main.async {
+                self.onDescriptionRequested?()
+            }
+        } else {
+            mapsManager?.getDirections(to: transcribedText)
+        }
     }
 
     private func resetTimer() {
